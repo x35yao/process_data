@@ -8,7 +8,7 @@ import cv2
 import enum
 import os
 
-raw_dir = './raw_data'
+raw_dir = './raw_data/2022-04-13-morning'
 
 class AppType(enum.Enum):
     LEFT_AND_RIGHT = 1
@@ -28,7 +28,10 @@ class Pre_process:
         self.ndi_files_list = []
         self.videos_list = []
         self.suffix = '_preprocessed'
-        all_files = os.listdir(self.raw_dir)
+        root, dirs, files = next(os.walk(self.raw_dir))
+        all_files = []
+        for dir in dirs:
+            all_files += [os.path.join(root, dir, file) for file in next(os.walk(os.path.join(root, dir)))[2]]
         for name in all_files:
             if "Servo-displacement" in name:
                 self.servo_files_list.append(name)
@@ -38,7 +41,7 @@ class Pre_process:
                 self.videos_list.append(name)
         self.matched_list = []
         self.match_servo_ndi_video_files()
-        self.pre_dir = './preprocessed'
+        self.pre_dir = './preprocessed/' + self.raw_dir.split('/')[-1]
         if not os.path.isdir(self.pre_dir):
             os.mkdir(self.pre_dir )
 
@@ -48,11 +51,11 @@ class Pre_process:
         :return: A list tuples. Each entry is a matched instance which contains 4 elements: id, servo file, ndi file, and video file.
         '''
         for name in self.servo_files_list:
-            fname = name.split("-")[0]
-            matched_ndi_files = [ndi_file for ndi_file in self.ndi_files_list if fname in ndi_file]
-            matched_video_files = [video_file for video_file in self.videos_list if fname in video_file]
+            servo_id = name.split("/")[-1].split('-')[0]
+            matched_ndi_files = [ndi_file for ndi_file in self.ndi_files_list if servo_id in ndi_file]
+            matched_video_files = [video_file for video_file in self.videos_list if servo_id in video_file]
             if len(matched_ndi_files) == 1 and len(matched_video_files) == 1:
-                self.matched_list.append({'id': fname, 'servo': name, 'ndi': matched_ndi_files[0], 'video': matched_video_files[0]})
+                self.matched_list.append({'id': servo_id, 'servo': name, 'ndi': matched_ndi_files[0], 'video': matched_video_files[0]})
 
     # def create_dirs(self):
     #     """
@@ -73,10 +76,14 @@ class Pre_process:
 
         :return:
         '''
-        for matched in self.matched_list:
+        good_demo_ind = []
+        for i, matched in enumerate(self.matched_list):
             servo_file = matched['servo']
-            with open(self.raw_dir + '/' + servo_file, 'r') as f:
+            with open(servo_file, 'r') as f:
                 lines = f.readlines()
+            if not lines[-2][0] == 'S': # This is not a successful demonstration
+                continue
+            good_demo_ind.append(i)
             start = lines[-6].split(': ')[1].strip('\n')
             end = lines[-5].split(': ')[1].strip('\n')
             delta_t = self._compute_delta_t(start, end)
@@ -96,8 +103,10 @@ class Pre_process:
             if not os.path.isdir(outdir):
                 os.mkdir(outdir)
             df = pd.DataFrame.from_dict(dict)
+            fname = outdir + '/' + os.path.basename(servo_file) + self.suffix
             if save_to_csv:
-                df.to_csv(outdir + '/' + servo_file, index = False)
+                df.to_csv(fname, index = False)
+        self.matched_list = [self.matched_list[i] for i in good_demo_ind]
         return df
 
     def process_video(self):
@@ -121,7 +130,7 @@ class Pre_process:
             matched_id = matched['id']
             ndi_file = matched['ndi']
             processed_lines = []
-            with open(self.raw_dir + '/' + ndi_file, 'r') as f:
+            with open( ndi_file, 'r') as f:
                 lines = f.readlines()
             start = lines[6].split(',')[1]
             for line in lines[6:]:
@@ -168,7 +177,7 @@ class Pre_process:
                     newline = y[0] + ', NaN'
                 processed_lines.append(newline)
             outdir = self.pre_dir + f'/{matched_id}'
-            fname = outdir + '/' + ndi_file
+            fname = outdir + '/' + os.path.basename(ndi_file).replace('.txt', f'{self.suffix}.txt')
             with open(fname, 'w') as f:
                 for i in processed_lines:
                     i = i + '\n'
@@ -207,11 +216,12 @@ class Pre_process:
 
     def process_servo_video_ndi(self):
         self.process_servo()
-        self.process_video()
         self.process_ndi()
+        self.process_video()
+
 
     def _svo_to_mp4s(self, video, outdir, output_as_video = True):
-        svo_input_path = self.raw_dir + '/' + video
+        svo_input_path = video
         output_path = outdir
         app_type = AppType.LEFT_AND_RIGHT
 
@@ -246,11 +256,11 @@ class Pre_process:
         depth_image = sl.Mat()
 
         video_writer = None
-        vid_id = video.split('-')[0]
+        vid_id = os.path.basename(video).split('-')[0]
         outputdir_left = output_path + '/left'
         outputdir_right = output_path + '/right'
-        os.makedirs(outputdir_left, exist_ok=False)
-        os.makedirs(outputdir_right, exist_ok=False)
+        os.makedirs(outputdir_left, exist_ok=True)
+        os.makedirs(outputdir_right, exist_ok=True)
         output_path_left = outputdir_left + f'/{vid_id}-left.mp4'
         output_path_right = outputdir_right + f'/{vid_id}-right.mp4'
         if output_as_video:
