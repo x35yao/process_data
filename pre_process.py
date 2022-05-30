@@ -8,7 +8,7 @@ import cv2
 import enum
 import os
 
-raw_dir = './raw_data/2022-04-13-morning'
+raw_dir = './raw_data/2022-05-26'
 
 class AppType(enum.Enum):
     LEFT_AND_RIGHT = 1
@@ -20,6 +20,137 @@ def progress_bar(percent_done, bar_length=50):
     bar = '=' * done_length + '-' * (bar_length - done_length)
     sys.stdout.write('[%s] %f%s\r' % (bar, percent_done, '%'))
     sys.stdout.flush()
+
+def svo_to_mp4s(video, outdir, output_as_video = True):
+    print(video)
+    svo_input_path = video
+    output_path = outdir
+    app_type = AppType.LEFT_AND_RIGHT
+
+    # Specify SVO path parameter
+    init_params = sl.InitParameters()
+    init_params.set_from_svo_file(str(svo_input_path))
+    init_params.svo_real_time_mode = False  # Don't convert in realtime
+    init_params.coordinate_units = sl.UNIT.MILLIMETER  # Use milliliter units (for depth measurements)
+
+    # Create ZED objects
+    zed = sl.Camera()
+
+    # Open the SVO file specified as a parameter
+    err = zed.open(init_params)
+    if err != sl.ERROR_CODE.SUCCESS:
+        sys.stdout.write(repr(err))
+        zed.close()
+        exit()
+
+    # Get image size
+    image_size = zed.get_camera_information().camera_resolution
+    width = image_size.width
+    height = image_size.height
+
+    # Prepare side by side image container equivalent to CV_8UC4
+    svo_image_left_rgba = np.zeros((height, width, 4), dtype=np.uint8)
+    svo_image_right_rgba = np.zeros((height, width, 4), dtype=np.uint8)
+
+    # Prepare single image containers
+    left_image = sl.Mat()
+    right_image = sl.Mat()
+    depth_image = sl.Mat()
+
+    video_writer = None
+    vid_id = os.path.basename(video).split('-')[0]
+    outputdir_left = output_path + '/left'
+    outputdir_right = output_path + '/right'
+    os.makedirs(outputdir_left, exist_ok=True)
+    os.makedirs(outputdir_right, exist_ok=True)
+    output_path_left = outputdir_left + f'/{vid_id}-left.mp4'
+    output_path_right = outputdir_right + f'/{vid_id}-right.mp4'
+    if output_as_video:
+        # Create video writer with MPEG-4 part 2 codec
+        video_writer_left = cv2.VideoWriter((output_path_left),
+                                            cv2.VideoWriter_fourcc('M', '4', 'S', '2'),
+                                            max(zed.get_camera_information().camera_fps, 25),
+                                            (width, height))
+
+        video_writer_right = cv2.VideoWriter((output_path_right),
+                                             cv2.VideoWriter_fourcc('M', '4', 'S', '2'),
+                                             max(zed.get_camera_information().camera_fps, 25),
+                                             (width, height))
+
+        if not video_writer_left.isOpened():
+            sys.stdout.write("OpenCV video writer cannot be opened. Please check the .avi file path and write "
+                             "permissions.\n")
+            zed.close()
+            exit()
+
+    rt_param = sl.RuntimeParameters()
+    rt_param.sensing_mode = sl.SENSING_MODE.FILL
+
+    # Start SVO conversion to AVI/SEQUENCE
+    sys.stdout.write("Converting SVO... Use Ctrl-C to interrupt conversion.\n")
+
+    nb_frames = zed.get_svo_number_of_frames()
+
+    while True:
+        if zed.grab(rt_param) == sl.ERROR_CODE.SUCCESS:
+            svo_position = zed.get_svo_position()
+
+            # Retrieve SVO images
+            zed.retrieve_image(left_image, sl.VIEW.LEFT)
+
+            if app_type == AppType.LEFT_AND_RIGHT:
+                zed.retrieve_image(right_image, sl.VIEW.RIGHT)
+            elif app_type == AppType.LEFT_AND_DEPTH:
+                zed.retrieve_image(right_image, sl.VIEW.DEPTH)
+            elif app_type == AppType.LEFT_AND_DEPTH_16:
+                zed.retrieve_measure(depth_image, sl.MEASURE.DEPTH)
+
+            if output_as_video:
+                # Copy the left image to the left side of SBS image
+                svo_image_left_rgba = left_image.get_data()
+
+                # Copy the right image to the right side of SBS image
+                svo_image_right_rgba = right_image.get_data()
+
+                # Convert SVO image from RGBA to RGB
+                ocv_image_left_rgb = cv2.cvtColor(svo_image_left_rgba, cv2.COLOR_RGBA2RGB)
+
+                ocv_image_right_rgb = cv2.cvtColor(svo_image_right_rgba, cv2.COLOR_RGBA2RGB)
+
+                # Write the RGB image in the video
+                video_writer_left.write(ocv_image_left_rgb)
+                video_writer_right.write(ocv_image_right_rgb)
+            else:
+                # Generate file names
+                filename1 = output_path / ("left%s.png" % str(svo_position).zfill(6))
+                filename2 = output_path / (("right%s.png" if app_type == AppType.LEFT_AND_RIGHT
+                                            else "depth%s.png") % str(svo_position).zfill(6))
+
+                # Save Left images
+                cv2.imwrite(str(filename1), left_image.get_data())
+
+                if app_type != AppType.LEFT_AND_DEPTH_16:
+                    # Save right images
+                    cv2.imwrite(str(filename2), right_image.get_data())
+                else:
+                    # Save depth images (convert to uint16)
+                    cv2.imwrite(str(filename2), depth_image.get_data().astype(np.uint16))
+
+        # Display progress
+        progress_bar((svo_position + 1) / nb_frames * 100, 30)
+
+        # Check if we have reached the end of the video
+        if svo_position >= (nb_frames - 1):  # End of SVO
+            sys.stdout.write("\nSVO end has been reached. Exiting now.\n")
+            break
+    print(f'The video id is {vid_id}')
+    if output_as_video:
+        # Close the video writer
+        video_writer_left.release()
+        video_writer_right.release()
+
+    zed.close()
+    return 0
 
 class Pre_process:
     def __init__(self, raw_dir):
@@ -118,7 +249,7 @@ class Pre_process:
             video_svo = matched['video']
             matched_id = matched['id']
             outdir = self.pre_dir + '/' + matched_id
-            self._svo_to_mp4s(video_svo, outdir)
+            svo_to_mp4s(video_svo, outdir)
 
     def process_ndi(self):
         '''
@@ -220,137 +351,8 @@ class Pre_process:
         self.process_video()
 
 
-    def _svo_to_mp4s(self, video, outdir, output_as_video = True):
-        svo_input_path = video
-        output_path = outdir
-        app_type = AppType.LEFT_AND_RIGHT
 
-        # Specify SVO path parameter
-        init_params = sl.InitParameters()
-        init_params.set_from_svo_file(str(svo_input_path))
-        init_params.svo_real_time_mode = False  # Don't convert in realtime
-        init_params.coordinate_units = sl.UNIT.MILLIMETER  # Use milliliter units (for depth measurements)
-
-        # Create ZED objects
-        zed = sl.Camera()
-
-        # Open the SVO file specified as a parameter
-        err = zed.open(init_params)
-        if err != sl.ERROR_CODE.SUCCESS:
-            sys.stdout.write(repr(err))
-            zed.close()
-            exit()
-
-        # Get image size
-        image_size = zed.get_camera_information().camera_resolution
-        width = image_size.width
-        height = image_size.height
-
-        # Prepare side by side image container equivalent to CV_8UC4
-        svo_image_left_rgba = np.zeros((height, width, 4), dtype=np.uint8)
-        svo_image_right_rgba = np.zeros((height, width, 4), dtype=np.uint8)
-
-        # Prepare single image containers
-        left_image = sl.Mat()
-        right_image = sl.Mat()
-        depth_image = sl.Mat()
-
-        video_writer = None
-        vid_id = os.path.basename(video).split('-')[0]
-        outputdir_left = output_path + '/left'
-        outputdir_right = output_path + '/right'
-        os.makedirs(outputdir_left, exist_ok=True)
-        os.makedirs(outputdir_right, exist_ok=True)
-        output_path_left = outputdir_left + f'/{vid_id}-left.mp4'
-        output_path_right = outputdir_right + f'/{vid_id}-right.mp4'
-        if output_as_video:
-            # Create video writer with MPEG-4 part 2 codec
-            video_writer_left = cv2.VideoWriter((output_path_left),
-                                                cv2.VideoWriter_fourcc('M', '4', 'S', '2'),
-                                                max(zed.get_camera_information().camera_fps, 25),
-                                                (width, height))
-
-            video_writer_right = cv2.VideoWriter((output_path_right),
-                                                 cv2.VideoWriter_fourcc('M', '4', 'S', '2'),
-                                                 max(zed.get_camera_information().camera_fps, 25),
-                                                 (width, height))
-
-            if not video_writer_left.isOpened():
-                sys.stdout.write("OpenCV video writer cannot be opened. Please check the .avi file path and write "
-                                 "permissions.\n")
-                zed.close()
-                exit()
-
-        rt_param = sl.RuntimeParameters()
-        rt_param.sensing_mode = sl.SENSING_MODE.FILL
-
-        # Start SVO conversion to AVI/SEQUENCE
-        sys.stdout.write("Converting SVO... Use Ctrl-C to interrupt conversion.\n")
-
-        nb_frames = zed.get_svo_number_of_frames()
-
-        while True:
-            if zed.grab(rt_param) == sl.ERROR_CODE.SUCCESS:
-                svo_position = zed.get_svo_position()
-
-                # Retrieve SVO images
-                zed.retrieve_image(left_image, sl.VIEW.LEFT)
-
-                if app_type == AppType.LEFT_AND_RIGHT:
-                    zed.retrieve_image(right_image, sl.VIEW.RIGHT)
-                elif app_type == AppType.LEFT_AND_DEPTH:
-                    zed.retrieve_image(right_image, sl.VIEW.DEPTH)
-                elif app_type == AppType.LEFT_AND_DEPTH_16:
-                    zed.retrieve_measure(depth_image, sl.MEASURE.DEPTH)
-
-                if output_as_video:
-                    # Copy the left image to the left side of SBS image
-                    svo_image_left_rgba = left_image.get_data()
-
-                    # Copy the right image to the right side of SBS image
-                    svo_image_right_rgba = right_image.get_data()
-
-                    # Convert SVO image from RGBA to RGB
-                    ocv_image_left_rgb = cv2.cvtColor(svo_image_left_rgba, cv2.COLOR_RGBA2RGB)
-
-                    ocv_image_right_rgb = cv2.cvtColor(svo_image_right_rgba, cv2.COLOR_RGBA2RGB)
-
-                    # Write the RGB image in the video
-                    video_writer_left.write(ocv_image_left_rgb)
-                    video_writer_right.write(ocv_image_right_rgb)
-                else:
-                    # Generate file names
-                    filename1 = output_path / ("left%s.png" % str(svo_position).zfill(6))
-                    filename2 = output_path / (("right%s.png" if app_type == AppType.LEFT_AND_RIGHT
-                                                else "depth%s.png") % str(svo_position).zfill(6))
-
-                    # Save Left images
-                    cv2.imwrite(str(filename1), left_image.get_data())
-
-                    if app_type != AppType.LEFT_AND_DEPTH_16:
-                        # Save right images
-                        cv2.imwrite(str(filename2), right_image.get_data())
-                    else:
-                        # Save depth images (convert to uint16)
-                        cv2.imwrite(str(filename2), depth_image.get_data().astype(np.uint16))
-
-            # Display progress
-            progress_bar((svo_position + 1) / nb_frames * 100, 30)
-
-            # Check if we have reached the end of the video
-            if svo_position >= (nb_frames - 1):  # End of SVO
-                sys.stdout.write("\nSVO end has been reached. Exiting now.\n")
-                break
-        print(f'The video id is {vid_id}')
-        if output_as_video:
-            # Close the video writer
-            video_writer_left.release()
-            video_writer_right.release()
-
-        zed.close()
-        return 0
 
 if __name__ == '__main__':
     pp = Pre_process(raw_dir)
     pp.process_servo_video_ndi()
-

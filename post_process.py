@@ -3,6 +3,7 @@ from transform import transformer as tf
 import os
 import numpy as np
 from scipy.interpolate import interp1d
+import shutil
 
 
 class Post_process:
@@ -50,6 +51,26 @@ class Post_process:
                 self.processed.append((ndi_file, interpolated_data))
         return
 
+    def process_servo(self):
+        # It is simply copy the preprocessed servo file for now
+        for demo in self.demos:
+            root, dirs, files = next(os.walk(demo))
+            for file in files:
+                if 'Servo-displacement' in file:
+                    servo_file = file
+            src = root + '/' + servo_file
+            dst = src.replace('preprocessed', 'postprocessed')
+            shutil.copyfile(src, dst)
+
+    def process_video(self):
+        for demo in self.demos:
+            root, dirs, files = next(os.walk(demo))
+            vid_folder = os.path.join(root, dirs[0])
+            root, dirs, files = next(os.walk(vid_folder))
+            src = os.path.join(root, files[0])
+            dst = src.replace('preprocessed', 'postprocessed')
+            dst = dst.replace('/left/', '/')
+            shutil.copyfile(src, dst)
 
     def _columnwise_interp(self, data, filtertype, max_gap=0):
         """
@@ -108,7 +129,9 @@ class Post_process:
 
 
 if __name__ == '__main__':
-    pre_dir = './preprocessed/2022-04-13-morning'
+    pre_dir = './preprocessed/2022-05-26'
     pp = Post_process(pre_dir)
     pp.batch_process()
     pp.save_processed_file()
+    pp.process_servo()
+    pp.process_video()
