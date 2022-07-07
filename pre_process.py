@@ -8,7 +8,7 @@ import cv2
 import enum
 import os
 
-raw_dir = './raw_data/2022-05-26'
+
 
 class AppType(enum.Enum):
     LEFT_AND_RIGHT = 1
@@ -22,13 +22,29 @@ def progress_bar(percent_done, bar_length=50):
     sys.stdout.flush()
 
 def svo_to_mp4s(video, outdir, output_as_video = True):
-    print(video)
+    '''
+    This function will convert the .svo file got from ZED to .mp4 file.
+
+    parameters
+    ----------
+    video: string
+        The path to the .svo file
+    outdir: string
+        The path to the directory where the .mp4 will be saved
+    output_as_video: bool
+        Not useful for now. Might be useful in the future.
+
+    returns:
+    -------
+    0
+    '''
     svo_input_path = video
     output_path = outdir
     app_type = AppType.LEFT_AND_RIGHT
 
     # Specify SVO path parameter
     init_params = sl.InitParameters()
+
     init_params.set_from_svo_file(str(svo_input_path))
     init_params.svo_real_time_mode = False  # Don't convert in realtime
     init_params.coordinate_units = sl.UNIT.MILLIMETER  # Use milliliter units (for depth measurements)
@@ -58,7 +74,7 @@ def svo_to_mp4s(video, outdir, output_as_video = True):
     depth_image = sl.Mat()
 
     video_writer = None
-    vid_id = os.path.basename(video).split('-')[0]
+    vid_id = os.path.basename(video).split('.')[0]
     outputdir_left = output_path + '/left'
     outputdir_right = output_path + '/right'
     os.makedirs(outputdir_left, exist_ok=True)
@@ -90,7 +106,6 @@ def svo_to_mp4s(video, outdir, output_as_video = True):
     sys.stdout.write("Converting SVO... Use Ctrl-C to interrupt conversion.\n")
 
     nb_frames = zed.get_svo_number_of_frames()
-
     while True:
         if zed.grab(rt_param) == sl.ERROR_CODE.SUCCESS:
             svo_position = zed.get_svo_position()
@@ -188,15 +203,6 @@ class Pre_process:
             if len(matched_ndi_files) == 1 and len(matched_video_files) == 1:
                 self.matched_list.append({'id': servo_id, 'servo': name, 'ndi': matched_ndi_files[0], 'video': matched_video_files[0]})
 
-    # def create_dirs(self):
-    #     """
-    #     Create a directory for each matched tuple
-    #     :return:
-    #     """
-    #     for matched in self.matched_list:
-    #         matched_id = matched[0]
-    #         if not os.path.isdir(self.pre_dir + f'/{matched_id}'):
-    #             os.mkdir(self.pre_dir + f'/{matched_id}')
 
     def process_servo(self, save_to_csv = True):
         '''
@@ -205,7 +211,15 @@ class Pre_process:
         1. Convert the datetime to seconds for each timestamp.
         2. Extract only the timestamp where the gripper state changes.
 
-        :return:
+        parameters
+        ----------
+        save_to_csv: bool
+            Where or not the processed servo file will be saved as csv file
+
+        returns
+        -------
+        df: DataFrame
+            The DataFrame contains the processed servo file
         '''
         good_demo_ind = []
         for i, matched in enumerate(self.matched_list):
@@ -253,9 +267,8 @@ class Pre_process:
 
     def process_ndi(self):
         '''
-        This function converts the datetime to seconds for each timestamp
+        This function converts the datetime to seconds for each timestamp. It will also figure out which marker is visible to NDI.
 
-        :return:
         '''
         for matched in self.matched_list:
             matched_id = matched['id']
@@ -264,11 +277,16 @@ class Pre_process:
             with open( ndi_file, 'r') as f:
                 lines = f.readlines()
             start = lines[6].split(',')[1]
+            end = lines[-1].split(',')[1]
+            time_total = self._compute_delta_t(start, end)
+            frames_total = int(lines[-1].split(',')[0].split()[1])
+
             for line in lines[6:]:
                 y = line.strip().split(",")
+                frame_ind = int(y[0].split()[1])
+                time_stamp = frame_ind / frames_total * time_total
                 del y[0]
-                dt = self._compute_delta_t(start, y[0])
-                y[0] = str(dt)
+                y[0] = str(time_stamp)
                 if "Both" not in y[1]:
                     if "449" in lines[0]:
                         if "339" in lines[1]:
@@ -308,7 +326,7 @@ class Pre_process:
                     newline = y[0] + ', NaN'
                 processed_lines.append(newline)
             outdir = self.pre_dir + f'/{matched_id}'
-            fname = outdir + '/' + os.path.basename(ndi_file).replace('.txt', f'{self.suffix}.txt')
+            fname = outdir + '/' + os.path.basename(ndi_file).replace('.txt', f'_NDI{self.suffix}.txt')
             with open(fname, 'w') as f:
                 for i in processed_lines:
                     i = i + '\n'
@@ -318,9 +336,17 @@ class Pre_process:
     def _compute_delta_t(self, start, end):
         '''
         This function computes the time duration between start and end.
-        :param start: The starting time in format YYYY-MM-DD HH:MM:SS
-        :param end: The ending time in format YYYY-MM-DD HH:MM:SS
-        :return: delta_t: the time difference between start and end in seconds.
+
+        parameters
+        ----------
+        start: string
+            The starting time in format YYYY-MM-DD HH:MM:SS
+        end: string
+            The ending time in format YYYY-MM-DD HH:MM:SS
+        returns
+        -------
+        delta_t: float
+        the time difference between start and end in seconds.
         '''
         try:
             delta_t = (datetime.fromisoformat(end) - datetime.fromisoformat(start)).total_seconds()
@@ -354,5 +380,17 @@ class Pre_process:
 
 
 if __name__ == '__main__':
+
+    raw_dir = './raw_data/Jun30-2022'
     pp = Pre_process(raw_dir)
     pp.process_servo_video_ndi()
+
+#### Convert video from svo to mp4
+    raw_dir = './convert_reference_frame/Jun28-2022/svo'
+    raw_dir = './raw_data/Jun30-2022'
+    root, dirs, files = next(os.walk(raw_dir))
+    for f in files:
+        fname = f.split('.')[0]
+        video_path = os.path.join(root, f)
+        outdir = os.path.join(os.path.dirname(video_path).replace('svo', 'mp4s'), fname)
+        svo_to_mp4s(video_path, outdir)

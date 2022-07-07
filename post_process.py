@@ -21,26 +21,59 @@ class Post_process:
         return
 
     def transform(self, ndi_file):
+        '''
+        This function will convert the marker's pose to gripper's pose based on which marker is visible.
+
+        Parameters
+        ----------
+        ndi_file: string
+            The path to the ndi file that needs to be processed.
+
+        Returns
+        -------
+        df: DataFrame
+            A DataFrame that contains the gripper's pose trajectory.
+        '''
         my_transformer = tf(ndi_file)
         transformed_data = my_transformer.process_file()
         df = pd.DataFrame.from_dict(transformed_data)
         return df
 
-    def interpolate(self, transformed_data, kernel = 'linear', window_size = 0):
-        # for item in self.transformed:
+    def interpolate(self, transformed_data, kind = 'linear', max_gap = 0):
+        '''
+        This function will interpolate the gripper's pose trajectory.
+
+        Parameters
+        ----------
+        transformed_data: DataFrame
+            The DataFrame that contains the gripper's pose trajectory.
+        kind: string
+            The interpolate method. Options are: 'linear', 'nearest', 'nearest-up',‘zero’, ‘slinear’,
+            ‘quadratic’, ‘cubic’, ‘previous’, or ‘next’.
+        max_gap : int, optional
+            Maximum gap size to fill. By default, all gaps are interpolated.
+
+        Returns
+        -------
+        interpolated_data: DataFrame
+            A DataFrame that contains the interpolated_data gripper's pose trajectory.
+
+
+        '''
         interpolated_data = transformed_data.copy().astype('float')
         xy = transformed_data.astype('float').values
-        xy_filled = self._columnwise_interp(xy, kernel, window_size)
+        xy_filled = self._columnwise_interp(xy, kind, max_gap)
         filled = ~np.isnan(xy_filled)
         interpolated_data[filled] = xy_filled
         return interpolated_data
 
-    def batch_process(self):
+    def process_ndi(self):
+        '''This method will transform the marker position to gripper pose and then do interpolation'''
         for demo in self.demos:
             root, dirs, files = next(os.walk(demo))
             ndi_files = []
             for f in files:
-                if 'preprocessed.txt' in f:
+                if 'NDI_preprocessed.txt' in f:
                     ndi_files.append(os.path.join(root, f))
             if len(ndi_files) > 1:
                 raise ('There are more than one ndi files for this demonstration.')
@@ -52,27 +85,47 @@ class Post_process:
         return
 
     def process_servo(self):
-        # It is simply copy the preprocessed servo file for now
+        '''It is simply copy the preprocessed servo file for now'''
+        self.actions = {}
         for demo in self.demos:
+            self.actions[demo] = {}
             root, dirs, files = next(os.walk(demo))
             for file in files:
                 if 'Servo-displacement' in file:
                     servo_file = file
+            with open(os.path.join(root, servo_file), 'r') as f:
+                lines = f.readlines()
+            action_start = []
+            action_end = []
+            for line in lines:
+                if 'closed' in line:
+                    action_start.append(line.split(',')[0])
+                elif 'open' in line:
+                    action_end.append(line.split(',')[0])
+            self.actions[demo]['start'] = action_start
+            self.actions[demo]['end'] = action_end
             src = root + '/' + servo_file
             dst = src.replace('preprocessed', 'postprocessed')
             shutil.copyfile(src, dst)
 
     def process_video(self):
+        '''It is simply copy the preprocessed video file for now, might do something later'''
         for demo in self.demos:
             root, dirs, files = next(os.walk(demo))
-            vid_folder = os.path.join(root, dirs[0])
-            root, dirs, files = next(os.walk(vid_folder))
-            src = os.path.join(root, files[0])
-            dst = src.replace('preprocessed', 'postprocessed')
-            dst = dst.replace('/left/', '/')
-            shutil.copyfile(src, dst)
+            for d in dirs:
+                if d == 'left' or d == 'right':
+                    dir_full = os.path.join(root, d)
+                    root_d, dirs_d, files_d = next(os.walk(dir_full))
+                    src = os.path.join(root_d, files_d[0])
+                    dst = src.replace('preprocessed', 'postprocessed')
+                    dst_dir = os.path.dirname(dst)
+                    if not os.path.isdir(dst_dir):
+                        os.makedirs(dst_dir)
+                    shutil.copyfile(src, dst)
 
-    def _columnwise_interp(self, data, filtertype, max_gap=0):
+
+
+    def _columnwise_interp(self, data, kind, max_gap=0):
         """
         Perform cubic spline interpolation over the columns of *data*.
         All gaps of size lower than or equal to *max_gap* are filled,
@@ -82,6 +135,12 @@ class Post_process:
         ----------
         data : array_like
             2D matrix of data.
+        kind: string
+            The interpolate method. Options are: 'linear', 'nearest', 'nearest-up',‘zero’, ‘slinear’,
+            ‘quadratic’, ‘cubic’, ‘previous’, or ‘next’. ‘zero’, ‘slinear’, ‘quadratic’ and ‘cubic’
+            refer to a spline interpolation of zeroth, first, second or third order; ‘previous’ and ‘next’
+            simply return the previous or next value of the point; ‘nearest-up’ and ‘nearest’ differ when interpolating
+            half-integers (e.g. 0.5, 1.5) in that ‘nearest-up’ rounds up and ‘nearest’ rounds down. Default is ‘linear’.
         max_gap : int, optional
             Maximum gap size to fill. By default, all gaps are interpolated.
 
@@ -116,10 +175,11 @@ class Post_process:
         return temp
 
     def save_processed_file(self):
+        '''This function will save the processed NDI file'''
         for item in self.processed:
             fname = item[0]
             processed_data = item[1]
-            outname = fname.replace('preprocessed', 'postprocessed').replace('.txt', '.csv')
+            outname = fname.replace('preprocessed', 'postprocessed')
             outdir = os.path.dirname(outname)
             if not os.path.exists(outdir):
                 os.makedirs(outdir)
@@ -131,7 +191,7 @@ class Post_process:
 if __name__ == '__main__':
     pre_dir = './preprocessed/2022-05-26'
     pp = Post_process(pre_dir)
-    pp.batch_process()
-    pp.save_processed_file()
-    pp.process_servo()
+    # pp.process_servo()
     pp.process_video()
+    # pp.process_ndi()
+    # pp.save_processed_file()
